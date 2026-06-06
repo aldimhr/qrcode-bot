@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timezone
+from io import BytesIO
 
 from aiogram import Bot, Dispatcher, F, Router, types
 from aiogram.filters import Command, CommandStart
@@ -14,7 +15,7 @@ from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboar
 from qrcode_bot.config import Settings
 from qrcode_bot.core import decode_qr, generate_qr, generate_qr_wifi, parse_hex_color
 from qrcode_bot.donate import DONATE_TEXT, donation_keyboard, send_invoice
-from qrcode_bot.keyboards import main_reply_keyboard
+from qrcode_bot.keyboards import cancel_keyboard, decode_result_keyboard, main_reply_keyboard, qr_result_keyboard
 from qrcode_bot.stats import get_stats, record_decode, record_generation, record_inline, record_wifi
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,9 @@ user_frames: dict[int, dict] = {}
 # Per-user visual style preferences (in-memory)
 # Keys: "preset" (name), "gradient_top", "gradient_bottom", "rounded", "text_overlay"
 user_visual: dict[int, dict] = {}
+
+# Last decoded text per user (for quick re-generation)
+last_decoded: dict[int, str] = {}
 
 
 class WiFiStates(StatesGroup):
@@ -283,6 +287,7 @@ def create_router(settings: Settings) -> Router:
         await message.answer(
             "📶 *WiFi QR Generator*\n\nStep 1/2: What is the *WiFi network name (SSID)*?",
             parse_mode="Markdown",
+            reply_markup=cancel_keyboard(),
         )
 
     @router.message(WiFiStates.waiting_ssid)
@@ -296,6 +301,7 @@ def create_router(settings: Settings) -> Router:
         await message.answer(
             f"📶 Network: `{ssid}`\n\nStep 2/2: What is the *password*?\nSend `none` for open networks.",
             parse_mode="Markdown",
+            reply_markup=cancel_keyboard(),
         )
 
     @router.message(WiFiStates.waiting_password)
@@ -326,7 +332,7 @@ def create_router(settings: Settings) -> Router:
                 f"_Scan this QR to connect!_{CHANNEL_FOOTER}"
             ),
             parse_mode="Markdown",
-            reply_markup=main_reply_keyboard(),
+            reply_markup=qr_result_keyboard(),
         )
         record_wifi(message.from_user.id)
         await state.clear()
@@ -339,6 +345,7 @@ def create_router(settings: Settings) -> Router:
             "🏷️ *Logo QR Generator*\n\n"
             "Step 1/2: Send me the *text or URL* for your QR code.",
             parse_mode="Markdown",
+            reply_markup=cancel_keyboard(),
         )
 
     @router.message(LogoStates.waiting_text)
@@ -354,6 +361,7 @@ def create_router(settings: Settings) -> Router:
             "Step 2/2: Now send me a *logo image* (PNG/JPG, max 5MB).\n\n"
             "The logo will be placed in the center of the QR code.",
             parse_mode="Markdown",
+            reply_markup=cancel_keyboard(),
         )
 
     @router.message(LogoStates.waiting_logo, F.photo | F.document)
@@ -391,7 +399,7 @@ def create_router(settings: Settings) -> Router:
                 photo,
                 caption=f"🏷️ *QR with Logo!*\n\n`{display_text}`{CHANNEL_FOOTER}",
                 parse_mode="Markdown",
-                reply_markup=main_reply_keyboard(),
+                reply_markup=qr_result_keyboard(),
             )
             record_generation(message.from_user.id)
         except Exception as e:
@@ -469,6 +477,7 @@ def create_router(settings: Settings) -> Router:
                 "✏️ Send me the *custom text* for your frame (max 50 chars):",
                 parse_mode="Markdown",
             )
+            await callback.message.answer("Tap ❌ to cancel:", reply_markup=cancel_keyboard())
             await state.set_state(FrameStates.waiting_text)
         elif style == "rounded":
             user_frames[callback.from_user.id] = {"style": "rounded", "text": "Scan Me!"}
@@ -501,6 +510,7 @@ def create_router(settings: Settings) -> Router:
         await message.answer(
             "📇 *Contact QR (vCard)*\n\nStep 1/4: What is the *full name*?",
             parse_mode="Markdown",
+            reply_markup=cancel_keyboard(),
         )
 
     @router.message(ContactStates.waiting_name)
@@ -510,6 +520,7 @@ def create_router(settings: Settings) -> Router:
         await message.answer(
             "📞 Step 2/4: What is the *phone number*?\nSend `skip` to skip.",
             parse_mode="Markdown",
+            reply_markup=cancel_keyboard(),
         )
 
     @router.message(ContactStates.waiting_phone)
@@ -520,6 +531,7 @@ def create_router(settings: Settings) -> Router:
         await message.answer(
             "📧 Step 3/4: What is the *email address*?\nSend `skip` to skip.",
             parse_mode="Markdown",
+            reply_markup=cancel_keyboard(),
         )
 
     @router.message(ContactStates.waiting_email)
@@ -530,6 +542,7 @@ def create_router(settings: Settings) -> Router:
         await message.answer(
             "🏢 Step 4/4: What is the *organization/company*?\nSend `skip` to skip.",
             parse_mode="Markdown",
+            reply_markup=cancel_keyboard(),
         )
 
     @router.message(ContactStates.waiting_org)
@@ -550,7 +563,7 @@ def create_router(settings: Settings) -> Router:
         if org:
             lines.append(f"Org: {org}")
         lines.append(CHANNEL_FOOTER)
-        await message.answer_photo(photo, caption="\n".join(lines), parse_mode="Markdown", reply_markup=main_reply_keyboard())
+        await message.answer_photo(photo, caption="\n".join(lines), parse_mode="Markdown", reply_markup=qr_result_keyboard())
         record_generation(message.from_user.id)
         await state.clear()
 
@@ -561,6 +574,7 @@ def create_router(settings: Settings) -> Router:
         await message.answer(
             "📧 *Email QR*\n\nStep 1/3: What is the *recipient email address*?",
             parse_mode="Markdown",
+            reply_markup=cancel_keyboard(),
         )
 
     @router.message(EmailStates.waiting_to)
@@ -570,6 +584,7 @@ def create_router(settings: Settings) -> Router:
         await message.answer(
             "📝 Step 2/3: What is the *subject line*?\nSend `skip` to skip.",
             parse_mode="Markdown",
+            reply_markup=cancel_keyboard(),
         )
 
     @router.message(EmailStates.waiting_subject)
@@ -580,6 +595,7 @@ def create_router(settings: Settings) -> Router:
         await message.answer(
             "📄 Step 3/3: What is the *email body*?\nSend `skip` to skip.",
             parse_mode="Markdown",
+            reply_markup=cancel_keyboard(),
         )
 
     @router.message(EmailStates.waiting_body)
@@ -596,7 +612,7 @@ def create_router(settings: Settings) -> Router:
         if data.get("subject"):
             caption += f"\nSubject: {data['subject']}"
         caption += CHANNEL_FOOTER
-        await message.answer_photo(photo, caption=caption, parse_mode="Markdown", reply_markup=main_reply_keyboard())
+        await message.answer_photo(photo, caption=caption, parse_mode="Markdown", reply_markup=qr_result_keyboard())
         record_generation(message.from_user.id)
         await state.clear()
 
@@ -607,6 +623,7 @@ def create_router(settings: Settings) -> Router:
         await message.answer(
             "📞 *Phone QR*\n\nSend me the *phone number* (e.g. `+628****6789`).",
             parse_mode="Markdown",
+            reply_markup=cancel_keyboard(),
         )
 
     @router.message(PhoneStates.waiting_number)
@@ -621,7 +638,7 @@ def create_router(settings: Settings) -> Router:
         png_bytes = generate_qr(phone_str, **style)
         png_bytes = apply_user_frame(png_bytes, message.from_user.id)
         photo = BufferedInputFile(png_bytes, filename="phone_qr.png")
-        await message.answer_photo(photo, caption=f"📞 *Phone QR*\n\n`{phone_str}`{CHANNEL_FOOTER}", parse_mode="Markdown", reply_markup=main_reply_keyboard())
+        await message.answer_photo(photo, caption=f"📞 *Phone QR*\n\n`{phone_str}`{CHANNEL_FOOTER}", parse_mode="Markdown", reply_markup=qr_result_keyboard())
         record_generation(message.from_user.id)
         await state.clear()
 
@@ -634,6 +651,7 @@ def create_router(settings: Settings) -> Router:
             "Send coordinates as `lat,lng` (e.g. `-6.2088,106.8456`)\n\n"
             "Or share a Telegram location 📍 and I'll use those coordinates.",
             parse_mode="Markdown",
+            reply_markup=cancel_keyboard(),
         )
 
     @router.message(LocationStates.waiting_coords, F.location)
@@ -661,7 +679,7 @@ def create_router(settings: Settings) -> Router:
             photo,
             caption=f"📍 *Location QR*\n\n`{geo_str}`\n[Open in Maps](https://maps.google.com/?q={lat},{lng}){CHANNEL_FOOTER}",
             parse_mode="Markdown",
-            reply_markup=main_reply_keyboard(),
+            reply_markup=qr_result_keyboard(),
         )
         record_generation(message.from_user.id)
         await state.clear()
@@ -673,6 +691,7 @@ def create_router(settings: Settings) -> Router:
         await message.answer(
             "📅 *Calendar Event QR*\n\nStep 1/4: What is the *event title*?",
             parse_mode="Markdown",
+            reply_markup=cancel_keyboard(),
         )
 
     @router.message(EventStates.waiting_title)
@@ -682,6 +701,7 @@ def create_router(settings: Settings) -> Router:
         await message.answer(
             "🕐 Step 2/4: When does it *start*?\n\nFormat: `2026-06-15 14:00` (YYYY-MM-DD HH:MM)",
             parse_mode="Markdown",
+            reply_markup=cancel_keyboard(),
         )
 
     @router.message(EventStates.waiting_start)
@@ -696,6 +716,7 @@ def create_router(settings: Settings) -> Router:
         await message.answer(
             "🕐 Step 3/4: When does it *end*?\n\nFormat: `2026-06-15 15:00`",
             parse_mode="Markdown",
+            reply_markup=cancel_keyboard(),
         )
 
     @router.message(EventStates.waiting_end)
@@ -710,6 +731,7 @@ def create_router(settings: Settings) -> Router:
         await message.answer(
             "📍 Step 4/4: Where is the *location*?\nSend `skip` to skip.",
             parse_mode="Markdown",
+            reply_markup=cancel_keyboard(),
         )
 
     @router.message(EventStates.waiting_location)
@@ -726,7 +748,7 @@ def create_router(settings: Settings) -> Router:
         if location:
             caption += f"\n📍 {location}"
         caption += CHANNEL_FOOTER
-        await message.answer_photo(photo, caption=caption, parse_mode="Markdown", reply_markup=main_reply_keyboard())
+        await message.answer_photo(photo, caption=caption, parse_mode="Markdown", reply_markup=qr_result_keyboard())
         record_generation(message.from_user.id)
         await state.clear()
 
@@ -754,10 +776,22 @@ def create_router(settings: Settings) -> Router:
                 await message.answer("✏️ Send me any text or URL to generate a QR code.")
             elif text == "📷 Decode QR":
                 await message.answer("📷 Send me a photo containing a QR code.")
+            elif text == "📶 WiFi QR":
+                await cmd_wifi(message, state)
             elif text == "🎨 Style":
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬛ Classic", callback_data="vstyle:classic"),
+                     InlineKeyboardButton(text="⬜ Dark", callback_data="vstyle:dark")],
+                    [InlineKeyboardButton(text="🌊 Ocean", callback_data="vstyle:ocean"),
+                     InlineKeyboardButton(text="🌅 Sunset", callback_data="vstyle:sunset")],
+                    [InlineKeyboardButton(text="💚 Neon", callback_data="vstyle:neon"),
+                     InlineKeyboardButton(text="🔵 Rounded", callback_data="vstyle:rounded")],
+                    [InlineKeyboardButton(text="🔤 Default", callback_data="vstyle:default")],
+                ])
                 await message.answer(
-                    "🎨 *Set QR Colors*\n\nUsage: `/style #FF0000 #FFFFFF`",
+                    "🎨 *Choose a QR Style*\n\nPick a preset or use `/style #FF0000 #FFFFFF` for custom colors.",
                     parse_mode="Markdown",
+                    reply_markup=keyboard,
                 )
             elif text == "💰 Donate":
                 await message.answer(DONATE_TEXT, reply_markup=donation_keyboard(), parse_mode="Markdown")
@@ -788,6 +822,7 @@ def create_router(settings: Settings) -> Router:
             photo,
             caption=f"✅ *QR Code Generated!*\n\n`{display_text}`{CHANNEL_FOOTER}",
             parse_mode="Markdown",
+            reply_markup=qr_result_keyboard(),
         )
         record_generation(message.from_user.id)
 
@@ -833,6 +868,104 @@ def create_router(settings: Settings) -> Router:
 
         record_inline(inline_query.from_user.id)
 
+    # --- QR action buttons callback ---
+    @router.callback_query(F.data.startswith("qr:"))
+    async def cb_qr_action(callback: types.CallbackQuery, state: FSMContext):
+        action = callback.data.split(":")[1]
+        await callback.answer()
+        uid = callback.from_user.id
+
+        if action == "style":
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬛ Classic", callback_data="vstyle:classic"),
+                 InlineKeyboardButton(text="⬜ Dark", callback_data="vstyle:dark")],
+                [InlineKeyboardButton(text="🌊 Ocean", callback_data="vstyle:ocean"),
+                 InlineKeyboardButton(text="🌅 Sunset", callback_data="vstyle:sunset")],
+                [InlineKeyboardButton(text="💚 Neon", callback_data="vstyle:neon"),
+                 InlineKeyboardButton(text="🔵 Rounded", callback_data="vstyle:rounded")],
+                [InlineKeyboardButton(text="🔤 Default", callback_data="vstyle:default")],
+            ])
+            await callback.message.answer(
+                "🎨 *Choose a QR Style*\n\nPick a preset or use `/style #FF0000 #FFFFFF` for custom colors.",
+                parse_mode="Markdown",
+                reply_markup=keyboard,
+            )
+        elif action == "frame":
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ No Frame", callback_data="frame:none")],
+                [InlineKeyboardButton(text="📱 Scan Me!", callback_data="frame:scan_me")],
+                [InlineKeyboardButton(text="📶 WiFi", callback_data="frame:wifi")],
+                [InlineKeyboardButton(text="✏️ Custom Text", callback_data="frame:custom_prompt")],
+                [InlineKeyboardButton(text="🖼️ Rounded Border", callback_data="frame:rounded")],
+            ])
+            await callback.message.answer(
+                "🖼️ *Choose a QR Frame Style*\n\nSelected style will apply to all your QR codes.",
+                parse_mode="Markdown",
+                reply_markup=keyboard,
+            )
+        elif action == "logo":
+            await callback.message.answer(
+                "🏷️ *Logo QR Generator*\n\nStep 1/2: Send me the *text or URL* for your QR code.",
+                parse_mode="Markdown",
+                reply_markup=cancel_keyboard(),
+            )
+            await state.set_state(LogoStates.waiting_text)
+        elif action == "sticker":
+            if callback.message.photo:
+                file_id = callback.message.photo[-1].file_id
+                file = await callback.bot.get_file(file_id)
+                file_bytes = await callback.bot.download_file(file.file_path)
+                png_bytes = file_bytes.read() if hasattr(file_bytes, "read") else bytes(file_bytes)
+                from PIL import Image
+                img = Image.open(BytesIO(png_bytes))
+                img = img.resize((512, 512), Image.LANCZOS)
+                buf = BytesIO()
+                img.save(buf, format="PNG", optimize=True)
+                buf.seek(0)
+                sticker = BufferedInputFile(buf.getvalue(), filename="qr_sticker.png")
+                await callback.message.answer_sticker(sticker)
+        elif action == "new":
+            await callback.message.answer("✏️ Send me any text or URL to generate a new QR code.")
+
+    # --- Cancel FSM callback ---
+    @router.callback_query(F.data == "cancel")
+    async def cb_cancel(callback: types.CallbackQuery, state: FSMContext):
+        await callback.answer()
+        current_state = await state.get_state()
+        if current_state:
+            await state.clear()
+        await callback.message.edit_text("❌ Cancelled.")
+        await callback.message.answer("What would you like to do?", reply_markup=main_reply_keyboard())
+
+    # --- Decode action callback ---
+    @router.callback_query(F.data.startswith("decode:"))
+    async def cb_decode_action(callback: types.CallbackQuery):
+        action = callback.data.split(":")[1]
+        uid = callback.from_user.id
+        decoded = last_decoded.get(uid)
+
+        if action == "gen" and decoded:
+            await callback.answer()
+            style = get_user_style(uid, settings)
+            try:
+                png_bytes = generate_qr(decoded, **style)
+                png_bytes = apply_user_frame(png_bytes, uid)
+                photo = BufferedInputFile(png_bytes, filename="qr.png")
+                display_text = decoded[:100] + ("..." if len(decoded) > 100 else "")
+                await callback.message.answer_photo(
+                    photo,
+                    caption=f"✅ *QR Code Generated!*\n\n`{display_text}`{CHANNEL_FOOTER}",
+                    parse_mode="Markdown",
+                    reply_markup=qr_result_keyboard(),
+                )
+                record_generation(uid)
+            except ValueError:
+                await callback.message.answer("❌ Text is too long to generate a QR code.")
+        elif action == "copy" and decoded:
+            await callback.answer(f"📋 {decoded[:200]}", show_alert=True)
+        else:
+            await callback.answer("❌ No decoded text available.")
+
     # --- Helper: decode image ---
     async def _decode_image(message: types.Message, file_id: str, bot: Bot):
         status_msg = await message.answer("🔍 Scanning for QR code...")
@@ -848,16 +981,20 @@ def create_router(settings: Settings) -> Router:
                 return
 
             if len(results) == 1:
+                last_decoded[message.from_user.id] = results[0]
                 await status_msg.edit_text(
                     f"✅ *Decoded!*\n\n`{results[0]}`",
                     parse_mode="Markdown",
                 )
             else:
                 decoded_text = "\n".join(f"{i+1}. `{r}`" for i, r in enumerate(results))
+                last_decoded[message.from_user.id] = results[0]
                 await status_msg.edit_text(
                     f"✅ *Found {len(results)} QR codes:*\n\n{decoded_text}",
                     parse_mode="Markdown",
                 )
+            # Add action buttons
+            await message.answer("What would you like to do with the decoded text?", reply_markup=decode_result_keyboard())
             record_decode(message.from_user.id)
         except Exception as e:
             logger.exception("Decode error: %s", e)
