@@ -27,6 +27,10 @@ user_styles: dict[int, dict] = {}
 # Per-user frame preferences (in-memory)
 user_frames: dict[int, dict] = {}
 
+# Per-user visual style preferences (in-memory)
+# Keys: "preset" (name), "gradient_top", "gradient_bottom", "rounded", "text_overlay"
+user_visual: dict[int, dict] = {}
+
 
 class WiFiStates(StatesGroup):
     waiting_ssid = State()
@@ -82,6 +86,9 @@ def get_user_style(user_id: int, settings: Settings) -> dict:
 
 def apply_user_frame(qr_bytes: bytes, user_id: int) -> bytes:
     """Apply user's frame preference to QR bytes if set."""
+    # Apply visual effects first (gradient, rounded modules)
+    qr_bytes = apply_user_visual(qr_bytes, user_id)
+    # Then apply frame
     frame = user_frames.get(user_id)
     if not frame:
         return qr_bytes
@@ -89,6 +96,19 @@ def apply_user_frame(qr_bytes: bytes, user_id: int) -> bytes:
     if frame["style"] == "rounded":
         return apply_rounded_frame(qr_bytes, text=frame.get("text", "Scan Me!"))
     return apply_frame(qr_bytes, text=frame.get("text", "Scan Me!"))
+
+
+def apply_user_visual(qr_bytes: bytes, user_id: int) -> bytes:
+    """Apply user's visual style preference to QR bytes."""
+    visual = user_visual.get(user_id)
+    if not visual:
+        return qr_bytes
+    from qrcode_bot.styles import apply_gradient, apply_rounded_modules
+    if visual.get("rounded"):
+        return apply_rounded_modules(qr_bytes)
+    if visual.get("gradient_top") and visual.get("gradient_bottom"):
+        return apply_gradient(qr_bytes, visual["gradient_top"], visual["gradient_bottom"])
+    return qr_bytes
 
 
 def create_router(settings: Settings) -> Router:
@@ -163,18 +183,64 @@ def create_router(settings: Settings) -> Router:
             bg = parse_hex_color(parts[2])
             if fg and bg:
                 user_styles[message.from_user.id] = {"fg": fg, "bg": bg}
+                user_visual.pop(message.from_user.id, None)
                 await message.answer(
                     f"🎨 *Style updated!*\n\nForeground: `{fg}`\nBackground: `{bg}`\n\n"
                     "Send any text to see your new style in action.",
                     parse_mode="Markdown",
                 )
                 return
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬛ Classic", callback_data="vstyle:classic"),
+             InlineKeyboardButton(text="⬜ Dark", callback_data="vstyle:dark")],
+            [InlineKeyboardButton(text="🌊 Ocean", callback_data="vstyle:ocean"),
+             InlineKeyboardButton(text="🌅 Sunset", callback_data="vstyle:sunset")],
+            [InlineKeyboardButton(text="💚 Neon", callback_data="vstyle:neon"),
+             InlineKeyboardButton(text="🔵 Rounded", callback_data="vstyle:rounded")],
+            [InlineKeyboardButton(text="🔤 Default", callback_data="vstyle:default")],
+        ])
         await message.answer(
-            "🎨 *Set QR Colors*\n\n"
-            "Usage: `/style #FF0000 #FFFFFF`\n"
-            "First color = QR dots, second = background.",
+            "🎨 *Choose a QR Style*\n\n"
+            "Pick a preset or use `/style #FF0000 #FFFFFF` for custom colors.",
             parse_mode="Markdown",
+            reply_markup=keyboard,
         )
+
+    @router.callback_query(F.data.startswith("vstyle:"))
+    async def cb_vstyle(callback: types.CallbackQuery):
+        preset = callback.data.split(":")[1]
+        await callback.answer()
+        uid = callback.from_user.id
+
+        presets = {
+            "classic": {"fg": "#000000", "bg": "#FFFFFF"},
+            "dark": {"fg": "#FFFFFF", "bg": "#000000"},
+            "neon": {"fg": "#00FF00", "bg": "#000000"},
+        }
+        gradient_presets = {
+            "ocean": {"top": "#0077BE", "bottom": "#00D4FF"},
+            "sunset": {"top": "#FF6B35", "bottom": "#FFD700"},
+        }
+
+        if preset == "default":
+            user_visual.pop(uid, None)
+            user_styles.pop(uid, None)
+            await callback.message.edit_text("🔤 Default style restored.")
+        elif preset == "rounded":
+            user_visual[uid] = {"rounded": True}
+            user_styles.pop(uid, None)
+            await callback.message.edit_text("🔵 *Rounded modules* style set!\n\nYour QR codes will use rounded dots.")
+        elif preset in gradient_presets:
+            gp = gradient_presets[preset]
+            user_visual[uid] = {"gradient_top": gp["top"], "gradient_bottom": gp["bottom"]}
+            user_styles.pop(uid, None)
+            await callback.message.edit_text(f"🌊 *{preset.title()} gradient* style set!")
+        elif preset in presets:
+            ps = presets[preset]
+            user_styles[uid] = {"fg": ps["fg"], "bg": ps["bg"]}
+            user_visual.pop(uid, None)
+            await callback.message.edit_text(f"🎨 *{preset.title()}* style set!")
 
     # --- /stats (admin only) ---
     @router.message(Command("stats"))
