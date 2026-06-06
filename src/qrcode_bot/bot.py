@@ -178,6 +178,42 @@ def create_router(settings: Settings) -> Router:
         )
         await message.answer(text, parse_mode="Markdown")
 
+    # --- /settings ---
+    @router.message(Command("settings"))
+    async def cmd_settings(message: types.Message):
+        uid = message.from_user.id
+        lines = ["⚙️ *Your Settings*\n"]
+
+        # Visual style
+        visual = user_visual.get(uid)
+        style = user_styles.get(uid)
+        if visual and visual.get("rounded"):
+            lines.append("🎨 Style: 🔵 Rounded modules")
+        elif visual and visual.get("gradient_top"):
+            lines.append(f"🎨 Style: 🌊 Gradient `{visual['gradient_top']}` → `{visual['gradient_bottom']}`")
+        elif style:
+            lines.append(f"🎨 Style: Custom `{style['fg']}` on `{style['bg']}`")
+        else:
+            lines.append("🎨 Style: ⬛ Classic (default)")
+
+        # Frame
+        frame = user_frames.get(uid)
+        if frame:
+            if frame["style"] == "rounded":
+                lines.append("🖼 Frame: 🖼️ Rounded border")
+            elif frame["style"] == "custom":
+                lines.append(f"🖼 Frame: ✏️ Custom — `{frame.get('text', '')}`")
+            else:
+                frame_labels = {"scan_me": "📱 Scan Me!", "wifi": "📶 WiFi"}
+                lines.append(f"🖼 Frame: {frame_labels.get(frame['style'], frame['style'])}")
+        else:
+            lines.append("🖼 Frame: ❌ None")
+
+        lines.append("")
+        lines.append("Use /style to change colors, /frame to change frame.")
+
+        await message.answer("\n".join(lines), parse_mode="Markdown")
+
     # --- /style ---
     @router.message(Command("style"))
     async def cmd_style(message: types.Message):
@@ -771,7 +807,7 @@ def create_router(settings: Settings) -> Router:
     async def handle_text(message: types.Message, state: FSMContext):
         text = message.text.strip()
         # Skip keyboard button labels
-        if text in ("📱 Generate QR", "📷 Decode QR", "📶 WiFi QR", "🏷️ Logo QR", "📋 More Types", "🖼️ Frame", "🎨 Style", "ℹ️ Help", "🔒 Privacy", "💰 Donate"):
+        if text in ("📱 Generate QR", "📷 Decode QR", "📶 WiFi QR", "🏷️ Logo QR", "📋 More Types", "🖼️ Frame", "🎨 Style", "⚙️ Settings", "ℹ️ Help", "🔒 Privacy", "💰 Donate"):
             if text == "📱 Generate QR":
                 await message.answer("✏️ Send me any text or URL to generate a QR code.")
             elif text == "📷 Decode QR":
@@ -806,6 +842,8 @@ def create_router(settings: Settings) -> Router:
                 await cmd_help(message)
             elif text == "🔒 Privacy":
                 await cmd_privacy(message)
+            elif text == "⚙️ Settings":
+                await cmd_settings(message)
             return
 
         style = get_user_style(message.from_user.id, settings)
@@ -1046,6 +1084,7 @@ async def register_commands(bot: Bot, admin_ids: list[int]) -> None:
         BotCommand(command="logo", description="🏷️ QR with your logo"),
         BotCommand(command="frame", description="🖼️ Add frame to QR"),
         BotCommand(command="style", description="🎨 Customize QR colors"),
+        BotCommand(command="settings", description="⚙️ View your settings"),
         BotCommand(command="donate", description="💝 Support with Stars"),
         BotCommand(command="privacy", description="🔒 Privacy policy"),
         BotCommand(command="types", description="📋 All QR types"),
