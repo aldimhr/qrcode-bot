@@ -9,7 +9,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import BufferedInputFile, InlineQueryResultCachedPhoto, LabeledPrice
+from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultCachedPhoto, LabeledPrice
 
 from qrcode_bot.config import Settings
 from qrcode_bot.core import decode_qr, generate_qr, generate_qr_wifi, parse_hex_color
@@ -23,6 +23,9 @@ CHANNEL_FOOTER = "\n\n📢 @x0projects"
 
 # Per-user style preferences (in-memory, resets on restart)
 user_styles: dict[int, dict] = {}
+
+# Per-user frame preferences (in-memory)
+user_frames: dict[int, dict] = {}
 
 
 class WiFiStates(StatesGroup):
@@ -63,6 +66,10 @@ class EventStates(StatesGroup):
     waiting_location = State()
 
 
+class FrameStates(StatesGroup):
+    waiting_text = State()
+
+
 def get_user_style(user_id: int, settings: Settings) -> dict:
     style = user_styles.get(user_id, {})
     return {
@@ -71,6 +78,17 @@ def get_user_style(user_id: int, settings: Settings) -> dict:
         "box_size": settings.qr_box_size,
         "border": settings.qr_border,
     }
+
+
+def apply_user_frame(qr_bytes: bytes, user_id: int) -> bytes:
+    """Apply user's frame preference to QR bytes if set."""
+    frame = user_frames.get(user_id)
+    if not frame:
+        return qr_bytes
+    from qrcode_bot.frames import apply_frame, apply_rounded_frame
+    if frame["style"] == "rounded":
+        return apply_rounded_frame(qr_bytes, text=frame.get("text", "Scan Me!"))
+    return apply_frame(qr_bytes, text=frame.get("text", "Scan Me!"))
 
 
 def create_router(settings: Settings) -> Router:
@@ -114,6 +132,8 @@ def create_router(settings: Settings) -> Router:
             "📅 /event — Calendar event\n\n"
             "*Custom Colors:*\n"
             "Tap 🎨 Style or use /style `#FF0000 #FFFFFF`\n\n"
+            "*Custom Frames:*\n"
+            "Tap 🖼️ Frame or use /frame — add \"Scan Me!\" or custom text below QR.\n\n"
             "*Inline Mode:*\n"
             "In any chat, type `@botname your-text-here`\n\n"
             "*Supported formats:*\n"
@@ -230,6 +250,7 @@ def create_router(settings: Settings) -> Router:
             await state.clear()
             return
 
+        png_bytes = apply_user_frame(png_bytes, message.from_user.id)
         photo = BufferedInputFile(png_bytes, filename="wifi_qr.png")
         security_label = "Open" if security == "NOPASS" else security
         await message.answer_photo(
@@ -296,6 +317,7 @@ def create_router(settings: Settings) -> Router:
             qr_bytes = generate_qr(qr_text, error_correction="H")
             result_bytes = embed_logo(qr_bytes, logo_bytes)
 
+            result_bytes = apply_user_frame(result_bytes, message.from_user.id)
             photo = BufferedInputFile(result_bytes, filename="logo_qr.png")
             display_text = qr_text[:100] + ("..." if len(qr_text) > 100 else "")
             await status_msg.delete()
@@ -332,6 +354,79 @@ def create_router(settings: Settings) -> Router:
             "Or just send any text/URL for a quick QR!"
         )
         await message.answer(text, parse_mode="Markdown")
+
+    # --- /frame ---
+    @router.message(Command("frame"))
+    async def cmd_frame(message: types.Message, state: FSMContext):
+        parts = message.text.split(maxsplit=2)
+        if len(parts) >= 3 and parts[1].lower() == "custom":
+            custom_text = parts[2].strip()
+            if len(custom_text) > 50:
+                await message.answer("❌ Frame text too long (max 50 characters).")
+                return
+            user_frames[message.from_user.id] = {"style": "custom", "text": custom_text}
+            await message.answer(
+                f"🖼️ *Custom frame set!*\n\nText: `{custom_text}`\n\nAll your QR codes will now include this frame.",
+                parse_mode="Markdown",
+            )
+            return
+        if len(parts) >= 2 and parts[1].lower() == "off":
+            user_frames.pop(message.from_user.id, None)
+            await message.answer("🖼️ Frame removed. QR codes will be plain.")
+            return
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ No Frame", callback_data="frame:none")],
+            [InlineKeyboardButton(text="📱 Scan Me!", callback_data="frame:scan_me")],
+            [InlineKeyboardButton(text="📶 WiFi", callback_data="frame:wifi")],
+            [InlineKeyboardButton(text="✏️ Custom Text", callback_data="frame:custom_prompt")],
+            [InlineKeyboardButton(text="🖼️ Rounded Border", callback_data="frame:rounded")],
+        ])
+        await message.answer(
+            "🖼️ *Choose a QR Frame Style*\n\n"
+            "Selected style will apply to all your QR codes.\n"
+            "Use `/frame off` to remove.",
+            parse_mode="Markdown",
+            reply_markup=keyboard,
+        )
+
+    @router.callback_query(F.data.startswith("frame:"))
+    async def cb_frame(callback: types.CallbackQuery, state: FSMContext):
+        style = callback.data.split(":")[1]
+        await callback.answer()
+
+        if style == "none":
+            user_frames.pop(callback.from_user.id, None)
+            await callback.message.edit_text("🖼️ Frame removed. QR codes will be plain.")
+        elif style == "custom_prompt":
+            await callback.message.edit_text(
+                "✏️ Send me the *custom text* for your frame (max 50 chars):",
+                parse_mode="Markdown",
+            )
+            await state.set_state(FrameStates.waiting_text)
+        elif style == "rounded":
+            user_frames[callback.from_user.id] = {"style": "rounded", "text": "Scan Me!"}
+            await callback.message.edit_text(
+                "🖼️ *Rounded border frame set!*\n\nAll your QR codes will now have a rounded border.",
+                parse_mode="Markdown",
+            )
+        else:
+            text_map = {"scan_me": "Scan Me!", "wifi": "📶 Connect to WiFi"}
+            user_frames[callback.from_user.id] = {"style": style, "text": text_map.get(style, "Scan Me!")}
+            await callback.message.edit_text(
+                f"🖼️ *Frame set!* Style: {text_map.get(style, style)}\n\nAll your QR codes will now include this frame.",
+                parse_mode="Markdown",
+            )
+
+    @router.message(FrameStates.waiting_text)
+    async def frame_custom_text(message: types.Message, state: FSMContext):
+        text = message.text.strip()[:50]
+        user_frames[message.from_user.id] = {"style": "custom", "text": text}
+        await message.answer(
+            f"🖼️ *Custom frame set!*\n\nText: `{text}`\n\nAll your QR codes will now include this frame.",
+            parse_mode="Markdown",
+        )
+        await state.clear()
 
     # --- /contact (vCard) ---
     @router.message(Command("contact"))
@@ -379,6 +474,7 @@ def create_router(settings: Settings) -> Router:
         vcard = build_vcard(data["name"], data.get("phone", ""), data.get("email", ""), org)
         style = get_user_style(message.from_user.id, settings)
         png_bytes = generate_qr(vcard, **style)
+        png_bytes = apply_user_frame(png_bytes, message.from_user.id)
         photo = BufferedInputFile(png_bytes, filename="contact_qr.png")
         lines = [f"📇 *Contact QR*\n", f"Name: {data['name']}"]
         if data.get("phone"):
@@ -428,6 +524,7 @@ def create_router(settings: Settings) -> Router:
         email_str = build_email(data["to"], data.get("subject", ""), body)
         style = get_user_style(message.from_user.id, settings)
         png_bytes = generate_qr(email_str, **style)
+        png_bytes = apply_user_frame(png_bytes, message.from_user.id)
         photo = BufferedInputFile(png_bytes, filename="email_qr.png")
         caption = f"📧 *Email QR*\n\nTo: {data['to']}"
         if data.get("subject"):
@@ -456,6 +553,7 @@ def create_router(settings: Settings) -> Router:
             return
         style = get_user_style(message.from_user.id, settings)
         png_bytes = generate_qr(phone_str, **style)
+        png_bytes = apply_user_frame(png_bytes, message.from_user.id)
         photo = BufferedInputFile(png_bytes, filename="phone_qr.png")
         await message.answer_photo(photo, caption=f"📞 *Phone QR*\n\n`{phone_str}`{CHANNEL_FOOTER}", parse_mode="Markdown", reply_markup=main_reply_keyboard())
         record_generation(message.from_user.id)
@@ -491,6 +589,7 @@ def create_router(settings: Settings) -> Router:
         geo_str = build_location(lat, lng)
         style = get_user_style(message.from_user.id, settings)
         png_bytes = generate_qr(geo_str, **style)
+        png_bytes = apply_user_frame(png_bytes, message.from_user.id)
         photo = BufferedInputFile(png_bytes, filename="location_qr.png")
         await message.answer_photo(
             photo,
@@ -555,6 +654,7 @@ def create_router(settings: Settings) -> Router:
         event_str = build_event(data["title"], data["start"], data["end"], location)
         style = get_user_style(message.from_user.id, settings)
         png_bytes = generate_qr(event_str, **style)
+        png_bytes = apply_user_frame(png_bytes, message.from_user.id)
         photo = BufferedInputFile(png_bytes, filename="event_qr.png")
         caption = f"📅 *Event QR*\n\n📌 {data['title']}\n🕐 {format_datetime(data['start'])} → {format_datetime(data['end'])}"
         if location:
@@ -583,7 +683,7 @@ def create_router(settings: Settings) -> Router:
     async def handle_text(message: types.Message, state: FSMContext):
         text = message.text.strip()
         # Skip keyboard button labels
-        if text in ("📱 Generate QR", "📷 Decode QR", "📶 WiFi QR", "🏷️ Logo QR", "📋 More Types", "🎨 Style", "ℹ️ Help", "🔒 Privacy", "💰 Donate"):
+        if text in ("📱 Generate QR", "📷 Decode QR", "📶 WiFi QR", "🏷️ Logo QR", "📋 More Types", "🖼️ Frame", "🎨 Style", "ℹ️ Help", "🔒 Privacy", "💰 Donate"):
             if text == "📱 Generate QR":
                 await message.answer("✏️ Send me any text or URL to generate a QR code.")
             elif text == "📷 Decode QR":
@@ -599,6 +699,8 @@ def create_router(settings: Settings) -> Router:
                 await cmd_logo(message, state)
             elif text == "📋 More Types":
                 await cmd_types(message)
+            elif text == "🖼️ Frame":
+                await cmd_frame(message, state)
             elif text == "ℹ️ Help":
                 # Re-trigger help
                 await cmd_help(message)
@@ -613,6 +715,7 @@ def create_router(settings: Settings) -> Router:
             await message.answer("❌ Text is too long or empty for a QR code.")
             return
 
+        png_bytes = apply_user_frame(png_bytes, message.from_user.id)
         photo = BufferedInputFile(png_bytes, filename="qr.png")
         display_text = text[:100] + ("..." if len(text) > 100 else "")
         await message.answer_photo(
@@ -738,6 +841,7 @@ async def register_commands(bot: Bot, admin_ids: list[int]) -> None:
         BotCommand(command="location", description="📍 Location QR code"),
         BotCommand(command="event", description="📅 Calendar event QR"),
         BotCommand(command="logo", description="🏷️ QR with your logo"),
+        BotCommand(command="frame", description="🖼️ Add frame to QR"),
         BotCommand(command="style", description="🎨 Customize QR colors"),
         BotCommand(command="donate", description="💝 Support with Stars"),
         BotCommand(command="privacy", description="🔒 Privacy policy"),
