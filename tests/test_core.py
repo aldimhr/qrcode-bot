@@ -6,6 +6,7 @@ from PIL import Image
 from qrcode_bot.core import generate_qr, generate_qr_wifi, decode_qr, parse_hex_color
 from qrcode_bot.logo import embed_logo, validate_logo
 from qrcode_bot.frames import apply_frame, apply_rounded_frame
+from qrcode_bot.styles import apply_gradient, apply_rounded_modules, apply_text_overlay
 from qrcode_bot.qr_types import (
     build_vcard, build_email, build_phone, build_location, build_event,
     parse_location_text, parse_datetime, format_datetime,
@@ -277,3 +278,47 @@ def test_apply_rounded_frame_larger():
     framed = Image.open(io.BytesIO(result))
     assert framed.size[0] > original.size[0]
     assert framed.size[1] > original.size[1]
+
+
+# --- Visual style tests ---
+
+def test_apply_gradient_returns_png():
+    qr = generate_qr("https://example.com")
+    result = apply_gradient(qr, "#FF0000", "#0000FF")
+    assert result[:4] == b"\x89PNG"
+
+
+def test_apply_gradient_same_size():
+    qr = generate_qr("test")
+    result = apply_gradient(qr)
+    original = Image.open(io.BytesIO(qr))
+    gradient = Image.open(io.BytesIO(result))
+    assert gradient.size == original.size
+
+
+def test_apply_rounded_modules_returns_png():
+    qr = generate_qr("https://example.com")
+    result = apply_rounded_modules(qr)
+    assert result[:4] == b"\x89PNG"
+
+
+def test_apply_rounded_modules_same_size():
+    qr = generate_qr("test")
+    result = apply_rounded_modules(qr)
+    original = Image.open(io.BytesIO(qr))
+    rounded = Image.open(io.BytesIO(result))
+    assert rounded.size == original.size
+
+
+def test_apply_text_overlay_returns_png():
+    qr = generate_qr("https://example.com", error_correction="H")
+    result = apply_text_overlay(qr, "example.com")
+    assert result[:4] == b"\x89PNG"
+
+
+def test_apply_text_overlay_same_size():
+    qr = generate_qr("test", error_correction="H")
+    result = apply_text_overlay(qr, "hello")
+    original = Image.open(io.BytesIO(qr))
+    overlaid = Image.open(io.BytesIO(result))
+    assert overlaid.size == original.size
