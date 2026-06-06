@@ -437,9 +437,45 @@ def create_router(settings: Settings) -> Router:
     return router
 
 
+async def register_commands(bot: Bot, admin_ids: list[int]) -> None:
+    """Register bot commands in Telegram's menu."""
+    from aiogram.types import BotCommand, BotCommandScopeChat
+
+    # Default commands — visible to ALL users
+    default_commands = [
+        BotCommand(command="start", description="🚀 Start the bot"),
+        BotCommand(command="help", description="📖 How to use this bot"),
+        BotCommand(command="wifi", description="📶 Generate WiFi QR code"),
+        BotCommand(command="logo", description="🏷️ QR with your logo"),
+        BotCommand(command="style", description="🎨 Customize QR colors"),
+        BotCommand(command="donate", description="💝 Support with Stars"),
+        BotCommand(command="privacy", description="🔒 Privacy policy"),
+    ]
+    await bot.set_my_commands(default_commands)
+
+    # Admin commands — visible only in admin DMs
+    admin_commands = default_commands + [
+        BotCommand(command="stats", description="📊 Bot statistics"),
+    ]
+    for admin_id in admin_ids:
+        try:
+            await bot.set_my_commands(
+                admin_commands,
+                scope=BotCommandScopeChat(chat_id=admin_id),
+            )
+        except Exception as e:
+            logging.warning("Failed to set admin commands for %s: %s", admin_id, e)
+
+
 def create_bot(settings: Settings) -> tuple[Bot, Dispatcher]:
     bot = Bot(token=settings.bot_token)
     dp = Dispatcher(storage=MemoryStorage())
     router = create_router(settings)
     dp.include_router(router)
+
+    @dp.startup()
+    async def on_startup(bot: Bot):
+        await register_commands(bot, settings.admin_ids)
+        logging.info("Commands registered")
+
     return bot, dp
