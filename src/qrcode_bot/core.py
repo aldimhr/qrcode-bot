@@ -15,14 +15,23 @@ def generate_qr(
     bg_color: str = "#FFFFFF",
     box_size: int = 10,
     border: int = 4,
+    error_correction: str = "M",
 ) -> bytes:
     """Generate a QR code and return PNG bytes."""
     if not text or not text.strip():
         raise ValueError("Text must not be empty")
 
+    ec_map = {
+        "L": qrcode.constants.ERROR_CORRECT_L,
+        "M": qrcode.constants.ERROR_CORRECT_M,
+        "Q": qrcode.constants.ERROR_CORRECT_Q,
+        "H": qrcode.constants.ERROR_CORRECT_H,
+    }
+    ec_level = ec_map.get(error_correction.upper(), qrcode.constants.ERROR_CORRECT_M)
+
     qr = qrcode.QRCode(
         version=None,
-        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        error_correction=ec_level,
         box_size=box_size,
         border=border,
     )

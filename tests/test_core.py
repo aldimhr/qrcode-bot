@@ -4,6 +4,7 @@ import pytest
 from PIL import Image
 
 from qrcode_bot.core import generate_qr, generate_qr_wifi, decode_qr, parse_hex_color
+from qrcode_bot.logo import embed_logo, validate_logo
 
 
 # --- Generation tests ---
@@ -40,6 +41,11 @@ def test_generate_qr_custom_size():
 def test_generate_qr_empty_text_raises():
     with pytest.raises(ValueError):
         generate_qr("")
+
+
+def test_generate_qr_error_correction_high():
+    data = generate_qr("test", error_correction="H")
+    assert data[:4] == b"\x89PNG"
 
 
 # --- WiFi QR tests ---
@@ -92,3 +98,53 @@ def test_parse_hex_color_invalid():
     assert parse_hex_color("red") is None
     assert parse_hex_color("#GGGGGG") is None
     assert parse_hex_color("") is None
+
+
+# --- Logo embedding tests ---
+
+def test_embed_logo_returns_png():
+    qr_bytes = generate_qr("https://example.com", error_correction="H")
+    logo = Image.new("RGBA", (100, 100), (255, 0, 0, 255))
+    buf = io.BytesIO()
+    logo.save(buf, format="PNG")
+    result = embed_logo(qr_bytes, buf.getvalue())
+    assert isinstance(result, bytes)
+    assert result[:4] == b"\x89PNG"
+
+
+def test_embed_logo_result_is_valid_image():
+    qr_bytes = generate_qr("https://example.com", error_correction="H")
+    logo = Image.new("RGBA", (100, 100), (0, 0, 255, 255))
+    buf = io.BytesIO()
+    logo.save(buf, format="PNG")
+    result = embed_logo(qr_bytes, buf.getvalue())
+    img = Image.open(io.BytesIO(result))
+    assert img.format == "PNG"
+    assert img.size[0] > 0
+
+
+def test_embed_logo_preserves_canvas_size():
+    qr_bytes = generate_qr("https://example.com", error_correction="H")
+    logo = Image.new("RGBA", (100, 100), (255, 0, 0, 255))
+    buf = io.BytesIO()
+    logo.save(buf, format="PNG")
+    result = embed_logo(qr_bytes, buf.getvalue())
+    original = Image.open(io.BytesIO(qr_bytes))
+    with_logo = Image.open(io.BytesIO(result))
+    assert with_logo.size == original.size
+
+
+def test_validate_logo_valid():
+    logo = Image.new("RGB", (100, 100), "red")
+    buf = io.BytesIO()
+    logo.save(buf, format="PNG")
+    assert validate_logo(buf.getvalue()) is True
+
+
+def test_validate_logo_too_large():
+    big = b"\x89PNG" + b"\x00" * (6 * 1024 * 1024)
+    assert validate_logo(big, max_mb=5) is False
+
+
+def test_validate_logo_invalid_format():
+    assert validate_logo(b"not an image") is False
