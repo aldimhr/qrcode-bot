@@ -2,16 +2,18 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timezone
 
 from aiogram import Bot, Dispatcher, F, Router, types
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import BufferedInputFile, InlineQueryResultCachedPhoto
+from aiogram.types import BufferedInputFile, InlineQueryResultCachedPhoto, LabeledPrice
 
 from qrcode_bot.config import Settings
 from qrcode_bot.core import decode_qr, generate_qr, generate_qr_wifi, parse_hex_color
+from qrcode_bot.donate import DONATE_TEXT, donation_keyboard, send_invoice
 from qrcode_bot.keyboards import main_reply_keyboard
 from qrcode_bot.stats import get_stats, record_decode, record_generation, record_inline, record_wifi
 
@@ -131,6 +133,22 @@ def create_router(settings: Settings) -> Router:
         )
         await message.answer(text, parse_mode="Markdown")
 
+    # --- /donate ---
+    @router.message(Command("donate"))
+    async def cmd_donate(message: types.Message):
+        parts = message.text.split()
+        if len(parts) >= 2:
+            try:
+                amount = int(parts[1])
+                if 1 <= amount <= 10000:
+                    ok = await send_invoice(message.bot, message.chat.id, amount, message.message_id)
+                    if not ok:
+                        await message.answer("❌ Failed to create invoice.")
+                    return
+            except ValueError:
+                pass
+        await message.answer(DONATE_TEXT, reply_markup=donation_keyboard(), parse_mode="Markdown")
+
     # --- /wifi ---
     @router.message(Command("wifi"))
     async def cmd_wifi(message: types.Message, state: FSMContext):
@@ -204,20 +222,18 @@ def create_router(settings: Settings) -> Router:
     async def handle_text(message: types.Message):
         text = message.text.strip()
         # Skip keyboard button labels
-        if text in ("📱 Generate QR", "📷 Decode QR", "📶 WiFi QR", "🎨 Style", "ℹ️ Help", "🔒 Privacy"):
+        if text in ("📱 Generate QR", "📷 Decode QR", "📶 WiFi QR", "🎨 Style", "ℹ️ Help", "🔒 Privacy", "💰 Donate"):
             if text == "📱 Generate QR":
                 await message.answer("✏️ Send me any text or URL to generate a QR code.")
             elif text == "📷 Decode QR":
                 await message.answer("📷 Send me a photo containing a QR code.")
-            elif text == "📶 WiFi QR":
-                from aiogram.fsm.context import FSMContext
-                # Re-trigger wifi flow
-                return
             elif text == "🎨 Style":
                 await message.answer(
                     "🎨 *Set QR Colors*\n\nUsage: `/style #FF0000 #FFFFFF`",
                     parse_mode="Markdown",
                 )
+            elif text == "💰 Donate":
+                await message.answer(DONATE_TEXT, reply_markup=donation_keyboard(), parse_mode="Markdown")
             elif text == "ℹ️ Help":
                 # Re-trigger help
                 await cmd_help(message)
@@ -312,6 +328,32 @@ def create_router(settings: Settings) -> Router:
         except Exception as e:
             logger.exception("Decode error: %s", e)
             await status_msg.edit_text("❌ Failed to process the image. Please try again.")
+
+    # --- Donate callback ---
+    @router.callback_query(F.data.startswith("donate:"))
+    async def cb_donate(callback: types.CallbackQuery):
+        amount_str = callback.data.split(":")[1]
+        if amount_str == "custom":
+            await callback.answer("Type /donate <amount> for custom amount", show_alert=True)
+            return
+        await callback.answer()
+        ok = await send_invoice(callback.bot, callback.message.chat.id, int(amount_str), callback.message.message_id)
+        if not ok:
+            await callback.message.answer("❌ Invoice failed.")
+
+    # --- Pre-checkout (required for Stars) ---
+    @router.pre_checkout_query()
+    async def on_pre_checkout(query: types.PreCheckoutQuery):
+        await query.answer(ok=True)
+
+    # --- Successful payment ---
+    @router.message(F.successful_payment)
+    async def on_successful_payment(message: types.Message):
+        stars = message.successful_payment.total_amount
+        await message.answer(
+            f"🎉 Thank you! You donated <b>{stars} Stars</b> ⭐\n\nYour support keeps the bot running!",
+            parse_mode="HTML",
+        )
 
     return router
 
