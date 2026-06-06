@@ -5,6 +5,7 @@ from PIL import Image
 
 from qrcode_bot.core import generate_qr, generate_qr_wifi, decode_qr, parse_hex_color
 from qrcode_bot.logo import embed_logo, validate_logo
+from qrcode_bot.frames import apply_frame, apply_rounded_frame
 from qrcode_bot.qr_types import (
     build_vcard, build_email, build_phone, build_location, build_event,
     parse_location_text, parse_datetime, format_datetime,
@@ -238,3 +239,41 @@ def test_parse_datetime_invalid():
 
 def test_format_datetime():
     assert format_datetime("20260615T140000") == "2026-06-15 14:00"
+
+
+# --- Frame tests ---
+
+def test_apply_frame_returns_png():
+    qr = generate_qr("https://example.com")
+    result = apply_frame(qr, text="Scan Me!")
+    assert result[:4] == b"\x89PNG"
+
+
+def test_apply_frame_taller_than_original():
+    qr = generate_qr("https://example.com")
+    result = apply_frame(qr, text="Scan Me!")
+    original = Image.open(io.BytesIO(qr))
+    framed = Image.open(io.BytesIO(result))
+    assert framed.size[1] > original.size[1]
+    assert framed.size[0] == original.size[0]
+
+
+def test_apply_frame_custom_text():
+    qr = generate_qr("test")
+    result = apply_frame(qr, text="Visit us at example.com")
+    assert result[:4] == b"\x89PNG"
+
+
+def test_apply_rounded_frame_returns_png():
+    qr = generate_qr("https://example.com")
+    result = apply_rounded_frame(qr, text="Scan Me!")
+    assert result[:4] == b"\x89PNG"
+
+
+def test_apply_rounded_frame_larger():
+    qr = generate_qr("test")
+    result = apply_rounded_frame(qr, text="Hello")
+    original = Image.open(io.BytesIO(qr))
+    framed = Image.open(io.BytesIO(result))
+    assert framed.size[0] > original.size[0]
+    assert framed.size[1] > original.size[1]
