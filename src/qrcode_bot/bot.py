@@ -35,6 +35,34 @@ class LogoStates(StatesGroup):
     waiting_logo = State()
 
 
+class ContactStates(StatesGroup):
+    waiting_name = State()
+    waiting_phone = State()
+    waiting_email = State()
+    waiting_org = State()
+
+
+class EmailStates(StatesGroup):
+    waiting_to = State()
+    waiting_subject = State()
+    waiting_body = State()
+
+
+class PhoneStates(StatesGroup):
+    waiting_number = State()
+
+
+class LocationStates(StatesGroup):
+    waiting_coords = State()
+
+
+class EventStates(StatesGroup):
+    waiting_title = State()
+    waiting_start = State()
+    waiting_end = State()
+    waiting_location = State()
+
+
 def get_user_style(user_id: int, settings: Settings) -> dict:
     style = user_styles.get(user_id, {})
     return {
@@ -58,6 +86,8 @@ def create_router(settings: Settings) -> Router:
             "• Send me any *text or URL* → I'll generate a QR code\n"
             "• Send me a *photo with a QR code* → I'll decode it\n"
             "• Use /wifi to create a WiFi QR code\n"
+            "• Use /contact to create a contact QR (vCard)\n"
+            "• Use /email, /phone, /location, /event for more types\n"
             "• Use /style to customize QR colors\n"
             "• Use me inline: `@botname your text`\n\n"
             "Just send me something to get started!"
@@ -76,6 +106,12 @@ def create_router(settings: Settings) -> Router:
             "Send me a photo or image containing a QR code.\n\n"
             "*WiFi QR:*\n"
             "Tap 📶 WiFi QR or use /wifi — I'll guide you.\n\n"
+            "*More QR Types:*\n"
+            "📇 /contact — Contact card (vCard)\n"
+            "📧 /email — Email with subject & body\n"
+            "📞 /phone — Phone number\n"
+            "📍 /location — GPS coordinates\n"
+            "📅 /event — Calendar event\n\n"
             "*Custom Colors:*\n"
             "Tap 🎨 Style or use /style `#FF0000 #FFFFFF`\n\n"
             "*Inline Mode:*\n"
@@ -280,6 +316,254 @@ def create_router(settings: Settings) -> Router:
     async def logo_wrong_input(message: types.Message):
         await message.answer("📷 Please send a *photo or image file* as your logo.", parse_mode="Markdown")
 
+    # --- /types ---
+    @router.message(Command("types"))
+    async def cmd_types(message: types.Message):
+        text = (
+            "📋 *Available QR Types*\n\n"
+            "Choose a type or use the command:\n\n"
+            "📇 /contact — Contact card (vCard)\n"
+            "📧 /email — Email with subject & body\n"
+            "📞 /phone — Phone number\n"
+            "📍 /location — GPS coordinates\n"
+            "📅 /event — Calendar event\n"
+            "📶 /wifi — WiFi network login\n"
+            "🏷️ /logo — QR with your logo\n\n"
+            "Or just send any text/URL for a quick QR!"
+        )
+        await message.answer(text, parse_mode="Markdown")
+
+    # --- /contact (vCard) ---
+    @router.message(Command("contact"))
+    async def cmd_contact(message: types.Message, state: FSMContext):
+        await state.set_state(ContactStates.waiting_name)
+        await message.answer(
+            "📇 *Contact QR (vCard)*\n\nStep 1/4: What is the *full name*?",
+            parse_mode="Markdown",
+        )
+
+    @router.message(ContactStates.waiting_name)
+    async def contact_name(message: types.Message, state: FSMContext):
+        await state.update_data(name=message.text.strip())
+        await state.set_state(ContactStates.waiting_phone)
+        await message.answer(
+            "📞 Step 2/4: What is the *phone number*?\nSend `skip` to skip.",
+            parse_mode="Markdown",
+        )
+
+    @router.message(ContactStates.waiting_phone)
+    async def contact_phone(message: types.Message, state: FSMContext):
+        phone = "" if message.text.strip().lower() == "skip" else message.text.strip()
+        await state.update_data(phone=phone)
+        await state.set_state(ContactStates.waiting_email)
+        await message.answer(
+            "📧 Step 3/4: What is the *email address*?\nSend `skip` to skip.",
+            parse_mode="Markdown",
+        )
+
+    @router.message(ContactStates.waiting_email)
+    async def contact_email(message: types.Message, state: FSMContext):
+        email = "" if message.text.strip().lower() == "skip" else message.text.strip()
+        await state.update_data(email=email)
+        await state.set_state(ContactStates.waiting_org)
+        await message.answer(
+            "🏢 Step 4/4: What is the *organization/company*?\nSend `skip` to skip.",
+            parse_mode="Markdown",
+        )
+
+    @router.message(ContactStates.waiting_org)
+    async def contact_org(message: types.Message, state: FSMContext):
+        data = await state.get_data()
+        org = "" if message.text.strip().lower() == "skip" else message.text.strip()
+        from qrcode_bot.qr_types import build_vcard
+        vcard = build_vcard(data["name"], data.get("phone", ""), data.get("email", ""), org)
+        style = get_user_style(message.from_user.id, settings)
+        png_bytes = generate_qr(vcard, **style)
+        photo = BufferedInputFile(png_bytes, filename="contact_qr.png")
+        lines = [f"📇 *Contact QR*\n", f"Name: {data['name']}"]
+        if data.get("phone"):
+            lines.append(f"Phone: {data['phone']}")
+        if data.get("email"):
+            lines.append(f"Email: {data['email']}")
+        if org:
+            lines.append(f"Org: {org}")
+        lines.append(CHANNEL_FOOTER)
+        await message.answer_photo(photo, caption="\n".join(lines), parse_mode="Markdown", reply_markup=main_reply_keyboard())
+        record_generation(message.from_user.id)
+        await state.clear()
+
+    # --- /email ---
+    @router.message(Command("email"))
+    async def cmd_email(message: types.Message, state: FSMContext):
+        await state.set_state(EmailStates.waiting_to)
+        await message.answer(
+            "📧 *Email QR*\n\nStep 1/3: What is the *recipient email address*?",
+            parse_mode="Markdown",
+        )
+
+    @router.message(EmailStates.waiting_to)
+    async def email_to(message: types.Message, state: FSMContext):
+        await state.update_data(to=message.text.strip())
+        await state.set_state(EmailStates.waiting_subject)
+        await message.answer(
+            "📝 Step 2/3: What is the *subject line*?\nSend `skip` to skip.",
+            parse_mode="Markdown",
+        )
+
+    @router.message(EmailStates.waiting_subject)
+    async def email_subject(message: types.Message, state: FSMContext):
+        subject = "" if message.text.strip().lower() == "skip" else message.text.strip()
+        await state.update_data(subject=subject)
+        await state.set_state(EmailStates.waiting_body)
+        await message.answer(
+            "📄 Step 3/3: What is the *email body*?\nSend `skip` to skip.",
+            parse_mode="Markdown",
+        )
+
+    @router.message(EmailStates.waiting_body)
+    async def email_body(message: types.Message, state: FSMContext):
+        data = await state.get_data()
+        body = "" if message.text.strip().lower() == "skip" else message.text.strip()
+        from qrcode_bot.qr_types import build_email
+        email_str = build_email(data["to"], data.get("subject", ""), body)
+        style = get_user_style(message.from_user.id, settings)
+        png_bytes = generate_qr(email_str, **style)
+        photo = BufferedInputFile(png_bytes, filename="email_qr.png")
+        caption = f"📧 *Email QR*\n\nTo: {data['to']}"
+        if data.get("subject"):
+            caption += f"\nSubject: {data['subject']}"
+        caption += CHANNEL_FOOTER
+        await message.answer_photo(photo, caption=caption, parse_mode="Markdown", reply_markup=main_reply_keyboard())
+        record_generation(message.from_user.id)
+        await state.clear()
+
+    # --- /phone ---
+    @router.message(Command("phone"))
+    async def cmd_phone(message: types.Message, state: FSMContext):
+        await state.set_state(PhoneStates.waiting_number)
+        await message.answer(
+            "📞 *Phone QR*\n\nSend me the *phone number* (e.g. `+628****6789`).",
+            parse_mode="Markdown",
+        )
+
+    @router.message(PhoneStates.waiting_number)
+    async def phone_number(message: types.Message, state: FSMContext):
+        from qrcode_bot.qr_types import build_phone
+        try:
+            phone_str = build_phone(message.text)
+        except ValueError:
+            await message.answer("❌ Please enter a valid phone number.")
+            return
+        style = get_user_style(message.from_user.id, settings)
+        png_bytes = generate_qr(phone_str, **style)
+        photo = BufferedInputFile(png_bytes, filename="phone_qr.png")
+        await message.answer_photo(photo, caption=f"📞 *Phone QR*\n\n`{phone_str}`{CHANNEL_FOOTER}", parse_mode="Markdown", reply_markup=main_reply_keyboard())
+        record_generation(message.from_user.id)
+        await state.clear()
+
+    # --- /location ---
+    @router.message(Command("location"))
+    async def cmd_location(message: types.Message, state: FSMContext):
+        await state.set_state(LocationStates.waiting_coords)
+        await message.answer(
+            "📍 *Location QR*\n\n"
+            "Send coordinates as `lat,lng` (e.g. `-6.2088,106.8456`)\n\n"
+            "Or share a Telegram location 📍 and I'll use those coordinates.",
+            parse_mode="Markdown",
+        )
+
+    @router.message(LocationStates.waiting_coords, F.location)
+    async def location_from_share(message: types.Message, state: FSMContext):
+        lat, lng = message.location.latitude, message.location.longitude
+        await _generate_location_qr(message, state, lat, lng)
+
+    @router.message(LocationStates.waiting_coords)
+    async def location_from_text(message: types.Message, state: FSMContext):
+        from qrcode_bot.qr_types import parse_location_text
+        coords = parse_location_text(message.text)
+        if not coords:
+            await message.answer("❌ Invalid format. Use `lat,lng` (e.g. `-6.2088,106.8456`)")
+            return
+        await _generate_location_qr(message, state, coords[0], coords[1])
+
+    async def _generate_location_qr(message: types.Message, state: FSMContext, lat: float, lng: float):
+        from qrcode_bot.qr_types import build_location
+        geo_str = build_location(lat, lng)
+        style = get_user_style(message.from_user.id, settings)
+        png_bytes = generate_qr(geo_str, **style)
+        photo = BufferedInputFile(png_bytes, filename="location_qr.png")
+        await message.answer_photo(
+            photo,
+            caption=f"📍 *Location QR*\n\n`{geo_str}`\n[Open in Maps](https://maps.google.com/?q={lat},{lng}){CHANNEL_FOOTER}",
+            parse_mode="Markdown",
+            reply_markup=main_reply_keyboard(),
+        )
+        record_generation(message.from_user.id)
+        await state.clear()
+
+    # --- /event ---
+    @router.message(Command("event"))
+    async def cmd_event(message: types.Message, state: FSMContext):
+        await state.set_state(EventStates.waiting_title)
+        await message.answer(
+            "📅 *Calendar Event QR*\n\nStep 1/4: What is the *event title*?",
+            parse_mode="Markdown",
+        )
+
+    @router.message(EventStates.waiting_title)
+    async def event_title(message: types.Message, state: FSMContext):
+        await state.update_data(title=message.text.strip())
+        await state.set_state(EventStates.waiting_start)
+        await message.answer(
+            "🕐 Step 2/4: When does it *start*?\n\nFormat: `2026-06-15 14:00` (YYYY-MM-DD HH:MM)",
+            parse_mode="Markdown",
+        )
+
+    @router.message(EventStates.waiting_start)
+    async def event_start(message: types.Message, state: FSMContext):
+        from qrcode_bot.qr_types import parse_datetime
+        dt = parse_datetime(message.text.strip())
+        if not dt:
+            await message.answer("❌ Invalid format. Use `YYYY-MM-DD HH:MM` (e.g. `2026-06-15 14:00`)")
+            return
+        await state.update_data(start=dt)
+        await state.set_state(EventStates.waiting_end)
+        await message.answer(
+            "🕐 Step 3/4: When does it *end*?\n\nFormat: `2026-06-15 15:00`",
+            parse_mode="Markdown",
+        )
+
+    @router.message(EventStates.waiting_end)
+    async def event_end(message: types.Message, state: FSMContext):
+        from qrcode_bot.qr_types import parse_datetime
+        dt = parse_datetime(message.text.strip())
+        if not dt:
+            await message.answer("❌ Invalid format. Use `YYYY-MM-DD HH:MM`")
+            return
+        await state.update_data(end=dt)
+        await state.set_state(EventStates.waiting_location)
+        await message.answer(
+            "📍 Step 4/4: Where is the *location*?\nSend `skip` to skip.",
+            parse_mode="Markdown",
+        )
+
+    @router.message(EventStates.waiting_location)
+    async def event_location(message: types.Message, state: FSMContext):
+        data = await state.get_data()
+        location = "" if message.text.strip().lower() == "skip" else message.text.strip()
+        from qrcode_bot.qr_types import build_event, format_datetime
+        event_str = build_event(data["title"], data["start"], data["end"], location)
+        style = get_user_style(message.from_user.id, settings)
+        png_bytes = generate_qr(event_str, **style)
+        photo = BufferedInputFile(png_bytes, filename="event_qr.png")
+        caption = f"📅 *Event QR*\n\n📌 {data['title']}\n🕐 {format_datetime(data['start'])} → {format_datetime(data['end'])}"
+        if location:
+            caption += f"\n📍 {location}"
+        caption += CHANNEL_FOOTER
+        await message.answer_photo(photo, caption=caption, parse_mode="Markdown", reply_markup=main_reply_keyboard())
+        record_generation(message.from_user.id)
+        await state.clear()
+
     # --- Handle photos (decode QR) ---
     @router.message(F.photo)
     async def handle_photo(message: types.Message, bot: Bot):
@@ -299,7 +583,7 @@ def create_router(settings: Settings) -> Router:
     async def handle_text(message: types.Message, state: FSMContext):
         text = message.text.strip()
         # Skip keyboard button labels
-        if text in ("📱 Generate QR", "📷 Decode QR", "📶 WiFi QR", "🏷️ Logo QR", "🎨 Style", "ℹ️ Help", "🔒 Privacy", "💰 Donate"):
+        if text in ("📱 Generate QR", "📷 Decode QR", "📶 WiFi QR", "🏷️ Logo QR", "📋 More Types", "🎨 Style", "ℹ️ Help", "🔒 Privacy", "💰 Donate"):
             if text == "📱 Generate QR":
                 await message.answer("✏️ Send me any text or URL to generate a QR code.")
             elif text == "📷 Decode QR":
@@ -313,6 +597,8 @@ def create_router(settings: Settings) -> Router:
                 await message.answer(DONATE_TEXT, reply_markup=donation_keyboard(), parse_mode="Markdown")
             elif text == "🏷️ Logo QR":
                 await cmd_logo(message, state)
+            elif text == "📋 More Types":
+                await cmd_types(message)
             elif text == "ℹ️ Help":
                 # Re-trigger help
                 await cmd_help(message)
@@ -446,10 +732,16 @@ async def register_commands(bot: Bot, admin_ids: list[int]) -> None:
         BotCommand(command="start", description="🚀 Start the bot"),
         BotCommand(command="help", description="📖 How to use this bot"),
         BotCommand(command="wifi", description="📶 Generate WiFi QR code"),
+        BotCommand(command="contact", description="📇 Contact card (vCard)"),
+        BotCommand(command="email", description="📧 Email QR code"),
+        BotCommand(command="phone", description="📞 Phone number QR"),
+        BotCommand(command="location", description="📍 Location QR code"),
+        BotCommand(command="event", description="📅 Calendar event QR"),
         BotCommand(command="logo", description="🏷️ QR with your logo"),
         BotCommand(command="style", description="🎨 Customize QR colors"),
         BotCommand(command="donate", description="💝 Support with Stars"),
         BotCommand(command="privacy", description="🔒 Privacy policy"),
+        BotCommand(command="types", description="📋 All QR types"),
     ]
     await bot.set_my_commands(default_commands)
 
