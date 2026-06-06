@@ -5,6 +5,10 @@ from PIL import Image
 
 from qrcode_bot.core import generate_qr, generate_qr_wifi, decode_qr, parse_hex_color
 from qrcode_bot.logo import embed_logo, validate_logo
+from qrcode_bot.qr_types import (
+    build_vcard, build_email, build_phone, build_location, build_event,
+    parse_location_text, parse_datetime, format_datetime,
+)
 
 
 # --- Generation tests ---
@@ -148,3 +152,89 @@ def test_validate_logo_too_large():
 
 def test_validate_logo_invalid_format():
     assert validate_logo(b"not an image") is False
+
+
+# --- QR types tests ---
+
+def test_build_vcard_basic():
+    vcard = build_vcard("John Doe", phone="+628****6789", email="john@example.com")
+    assert "BEGIN:VCARD" in vcard
+    assert "FN:John Doe" in vcard
+    assert "TEL" in vcard
+    assert "EMAIL" in vcard
+    assert "END:VCARD" in vcard
+
+
+def test_build_vcard_minimal():
+    vcard = build_vcard("Jane")
+    assert "BEGIN:VCARD" in vcard
+    assert "FN:Jane" in vcard
+    assert "END:VCARD" in vcard
+
+
+def test_build_email_simple():
+    assert build_email("test@example.com") == "mailto:test@example.com"
+
+
+def test_build_email_with_subject():
+    result = build_email("test@example.com", subject="Hello")
+    assert result.startswith("mailto:test@example.com?")
+    assert "subject=Hello" in result
+
+
+def test_build_email_empty_raises():
+    with pytest.raises(ValueError):
+        build_email("")
+
+
+def test_build_phone_basic():
+    assert build_phone("+628****6789") == "tel:+628****6789"
+
+
+def test_build_phone_with_spaces():
+    result = build_phone("+62 812 345 6789")
+    assert "tel:" in result
+    assert " " not in result.split("tel:")[1]
+
+
+def test_build_phone_empty_raises():
+    with pytest.raises(ValueError):
+        build_phone("")
+
+
+def test_build_location():
+    result = build_location(-6.2088, 106.8456)
+    assert result == "geo:-6.2088,106.8456"
+
+
+def test_build_event_basic():
+    event = build_event("Meeting", "20260615T140000", "20260615T150000", location="Jakarta")
+    assert "BEGIN:VCALENDAR" in event
+    assert "SUMMARY:Meeting" in event
+    assert "DTSTART:20260615T140000" in event
+    assert "LOCATION:Jakarta" in event
+    assert "END:VCALENDAR" in event
+
+
+def test_parse_location_text_valid():
+    assert parse_location_text("-6.2088,106.8456") == (-6.2088, 106.8456)
+    assert parse_location_text("0,0") == (0.0, 0.0)
+
+
+def test_parse_location_text_invalid():
+    assert parse_location_text("hello") is None
+    assert parse_location_text("999,106") is None
+    assert parse_location_text("") is None
+
+
+def test_parse_datetime_valid():
+    assert parse_datetime("2026-06-15 14:00") == "20260615T140000"
+
+
+def test_parse_datetime_invalid():
+    assert parse_datetime("hello") is None
+    assert parse_datetime("2026/06/15 14:00") is None
+
+
+def test_format_datetime():
+    assert format_datetime("20260615T140000") == "2026-06-15 14:00"
