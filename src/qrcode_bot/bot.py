@@ -30,6 +30,11 @@ class WiFiStates(StatesGroup):
     waiting_password = State()
 
 
+class LogoStates(StatesGroup):
+    waiting_text = State()
+    waiting_logo = State()
+
+
 def get_user_style(user_id: int, settings: Settings) -> dict:
     style = user_styles.get(user_id, {})
     return {
@@ -203,6 +208,78 @@ def create_router(settings: Settings) -> Router:
         record_wifi(message.from_user.id)
         await state.clear()
 
+    # --- /logo ---
+    @router.message(Command("logo"))
+    async def cmd_logo(message: types.Message, state: FSMContext):
+        await state.set_state(LogoStates.waiting_text)
+        await message.answer(
+            "🏷️ *Logo QR Generator*\n\n"
+            "Step 1/2: Send me the *text or URL* for your QR code.",
+            parse_mode="Markdown",
+        )
+
+    @router.message(LogoStates.waiting_text)
+    async def logo_text(message: types.Message, state: FSMContext):
+        text = message.text.strip()
+        if len(text) > 2000:
+            await message.answer("❌ Text is too long (max 2000 characters).")
+            return
+        await state.update_data(qr_text=text)
+        await state.set_state(LogoStates.waiting_logo)
+        await message.answer(
+            f"📝 Text: `{text[:100]}{'...' if len(text) > 100 else ''}`\n\n"
+            "Step 2/2: Now send me a *logo image* (PNG/JPG, max 5MB).\n\n"
+            "The logo will be placed in the center of the QR code.",
+            parse_mode="Markdown",
+        )
+
+    @router.message(LogoStates.waiting_logo, F.photo | F.document)
+    async def logo_image(message: types.Message, state: FSMContext, bot: Bot):
+        if message.photo:
+            file_id = message.photo[-1].file_id
+        elif message.document and message.document.mime_type and message.document.mime_type.startswith("image/"):
+            file_id = message.document.file_id
+        else:
+            await message.answer("📷 Please send an image file (PNG/JPG).")
+            return
+
+        status_msg = await message.answer("🔄 Generating QR with logo...")
+        try:
+            file = await bot.get_file(file_id)
+            file_bytes = await bot.download_file(file.file_path)
+            logo_bytes = file_bytes.read() if hasattr(file_bytes, "read") else bytes(file_bytes)
+
+            from qrcode_bot.logo import validate_logo, embed_logo
+            if not validate_logo(logo_bytes):
+                await status_msg.edit_text("❌ Invalid logo or too large (max 5MB). Please try again.")
+                return
+
+            data = await state.get_data()
+            qr_text = data["qr_text"]
+
+            qr_bytes = generate_qr(qr_text, error_correction="H")
+            result_bytes = embed_logo(qr_bytes, logo_bytes)
+
+            photo = BufferedInputFile(result_bytes, filename="logo_qr.png")
+            display_text = qr_text[:100] + ("..." if len(qr_text) > 100 else "")
+            await status_msg.delete()
+            await message.answer_photo(
+                photo,
+                caption=f"🏷️ *QR with Logo!*\n\n`{display_text}`{CHANNEL_FOOTER}",
+                parse_mode="Markdown",
+                reply_markup=main_reply_keyboard(),
+            )
+            record_generation(message.from_user.id)
+        except Exception as e:
+            logger.exception("Logo QR error: %s", e)
+            await status_msg.edit_text("❌ Failed to generate QR with logo. Please try again.")
+        finally:
+            await state.clear()
+
+    @router.message(LogoStates.waiting_logo)
+    async def logo_wrong_input(message: types.Message):
+        await message.answer("📷 Please send a *photo or image file* as your logo.", parse_mode="Markdown")
+
     # --- Handle photos (decode QR) ---
     @router.message(F.photo)
     async def handle_photo(message: types.Message, bot: Bot):
@@ -219,10 +296,10 @@ def create_router(settings: Settings) -> Router:
 
     # --- Handle text (generate QR) ---
     @router.message(F.text)
-    async def handle_text(message: types.Message):
+    async def handle_text(message: types.Message, state: FSMContext):
         text = message.text.strip()
         # Skip keyboard button labels
-        if text in ("📱 Generate QR", "📷 Decode QR", "📶 WiFi QR", "🎨 Style", "ℹ️ Help", "🔒 Privacy", "💰 Donate"):
+        if text in ("📱 Generate QR", "📷 Decode QR", "📶 WiFi QR", "🏷️ Logo QR", "🎨 Style", "ℹ️ Help", "🔒 Privacy", "💰 Donate"):
             if text == "📱 Generate QR":
                 await message.answer("✏️ Send me any text or URL to generate a QR code.")
             elif text == "📷 Decode QR":
@@ -234,6 +311,8 @@ def create_router(settings: Settings) -> Router:
                 )
             elif text == "💰 Donate":
                 await message.answer(DONATE_TEXT, reply_markup=donation_keyboard(), parse_mode="Markdown")
+            elif text == "🏷️ Logo QR":
+                await cmd_logo(message, state)
             elif text == "ℹ️ Help":
                 # Re-trigger help
                 await cmd_help(message)

@@ -10,7 +10,8 @@ def main_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📱 Generate QR"), KeyboardButton(text="📷 Decode QR")],
-            [KeyboardButton(text="📶 WiFi QR"), KeyboardButton(text="🎨 Style")],
+            [KeyboardButton(text="📶 WiFi QR"), KeyboardButton(text="🏷️ Logo QR")],
+            [KeyboardButton(text="🎨 Style")],
             [KeyboardButton(text="💰 Donate")],
             [KeyboardButton(text="ℹ️ Help"), KeyboardButton(text="🔒 Privacy")],
         ],
