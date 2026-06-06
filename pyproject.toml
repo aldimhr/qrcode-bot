@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qrcode-bot"
+version = "0.1.0"
+description = "Telegram bot for QR code generation and decoding"
+requires-python = ">=3.11"
+dependencies = [
+    "aiogram>=3.0",
+    "pydantic-settings>=2.0",
+    "python-dotenv>=1.0",
+    "qrcode[pil]>=7.0",
+    "pillow>=10.0",
+    "pyzbar>=0.1.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"
+testpaths = ["tests"]
